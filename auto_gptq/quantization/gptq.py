@@ -9,6 +9,8 @@ import transformers
 
 from .quantizer import Quantizer
 
+from hqq import quantize as hqq_quantize
+from hqq import dequantize as hqq_dequantize
 
 logger = getLogger(__name__)
 
@@ -66,6 +68,7 @@ class GPTQ:
         group_size=-1,
         actorder=False,
         static_groups=False,
+        L = 0.1
     ):
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
@@ -78,6 +81,15 @@ class GPTQ:
 
         if not self.quantizer.ready():
             self.quantizer.find_params(W, weight=True)
+
+        hqq_quant_config = {
+            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': None, 'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
+            'scale_quant_params': None,
+            'zero_quant_params': None}
+        
+        Q_hqq, meta_hqq = hqq_quantize(W, **hqq_quant_config)
+
+        W_hqq = hqq_dequantize(Q_hqq, meta_hqq)
 
         H = self.H
         del self.H
@@ -124,12 +136,14 @@ class GPTQ:
 
             W1 = W[:, i1:i2].clone()
             Q1 = torch.zeros_like(W1)
+            W1_hqq = W_hqq[:, i1:i2].clone()
             Err1 = torch.zeros_like(W1)
             Losses1 = torch.zeros_like(W1)
             Hinv1 = Hinv[i1:i2, i1:i2]
 
             for i in range(count):
                 w = W1[:, i]
+                w_hqq = W1_hqq[:, i]
                 d = Hinv1[i, i]
 
                 if group_size != -1:
@@ -151,7 +165,7 @@ class GPTQ:
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
 
-                err1 = (w - q) / d
+                err1 = ((w - w_hqq) * L + (w - q) * (1 - L)) / d
                 W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 Err1[:, i] = err1
 
@@ -182,7 +196,20 @@ class GPTQ:
 
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
-        self.layer.weight.data = Q.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
+
+        #reshape hqq scale and zero to match the shape of the quantizer
+        meta_hqq["scale"] = meta_hqq["scale"].reshape(self.quantizer.scale.shape)
+        meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape) 
+
+        logger.info(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
+        logger.info(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")        
+
+        self.quantizer.scale = L*meta_hqq["scale"] + (1-L)*self.quantizer.scale
+        self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
+        finalQ = L*W_hqq + (1-L)*Q
+
+        self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
+
         if os.environ.get("DEBUG"):
             logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
 
@@ -191,6 +218,7 @@ class GPTQ:
             zero.append(self.quantizer.zero)
         scale = torch.cat(scale, dim=1)
         zero = torch.cat(zero, dim=1)
+
         return scale, zero, g_idx
 
     def free(self):
