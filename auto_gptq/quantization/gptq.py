@@ -199,16 +199,24 @@ class GPTQ:
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
 
-        logger.info(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
-        logger.info(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")  
+        logger.debug(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
+        logger.debug(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")  
 
         #reshape hqq scale and zero to match the shape of the quantizer
-        meta_hqq["scale"] = meta_hqq["scale"].reshape(self.quantizer.scale.shape)
-        meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape)       
+        #meta_hqq["scale"] = meta_hqq["scale"].reshape(self.quantizer.scale.shape)
+        #meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape)       
+
+        logger.info(f"Prev self.quantizer.scale: {self.quantizer.scale[:5]} ")
+        logger.info(f"Prev self.quantizer.zero: {self.quantizer.zero[:5]} ")
+        logger.info(f"Prev Q: {finalQ[0][:5]} ")
 
         self.quantizer.scale = L*meta_hqq["scale"] + (1-L)*self.quantizer.scale
         self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
         finalQ = L*W_hqq + (1-L)*Q
+
+        logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5]} ")
+        logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
+        logger.info(f"Final Q: {finalQ[0][:5]} ")
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
