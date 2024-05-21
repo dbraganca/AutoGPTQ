@@ -32,6 +32,7 @@ class Quantizer(nn.Module):
         maxshrink=0.8,
         trits=False,
     ):
+        self.bits = bits
         self.maxq = torch.tensor(2**bits - 1)
         self.perchannel = perchannel
         self.sym = sym
@@ -82,7 +83,7 @@ class Quantizer(nn.Module):
             if self.sym:
                 self.zero = torch.full_like(self.scale, (self.maxq + 1) / 2)
             else:
-                self.zero = torch.round(-xmin / self.scale)
+                self.zero = torch.round(-xmin / self.scale) # test not rounding here. (Check AWQ paper on why they decided to do this.)
 
         if self.mse:
             best = torch.full([x.shape[0]], float("inf"), device=dev)

@@ -9,8 +9,8 @@ import transformers
 
 from .quantizer import Quantizer
 
-from hqq import quantize as hqq_quantize
-from hqq import dequantize as hqq_dequantize
+from .hqq import quantize as hqq_quantize
+from .hqq import dequantize as hqq_dequantize
 
 logger = getLogger(__name__)
 
@@ -82,8 +82,10 @@ class GPTQ:
         if not self.quantizer.ready():
             self.quantizer.find_params(W, weight=True)
 
+        hqq_group_size = group_size if group_size != -1 else None
+
         hqq_quant_config = {
-            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': None, 'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
+            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': hqq_group_size, 'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
             'scale_quant_params': None,
             'zero_quant_params': None}
         
@@ -197,12 +199,12 @@ class GPTQ:
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
 
+        logger.info(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
+        logger.info(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")  
+
         #reshape hqq scale and zero to match the shape of the quantizer
         meta_hqq["scale"] = meta_hqq["scale"].reshape(self.quantizer.scale.shape)
-        meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape) 
-
-        logger.info(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
-        logger.info(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")        
+        meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape)       
 
         self.quantizer.scale = L*meta_hqq["scale"] + (1-L)*self.quantizer.scale
         self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
