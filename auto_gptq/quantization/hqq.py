@@ -328,13 +328,15 @@ def quantize_algo(
     # Pack bits
     meta["view_as_float"] = view_as_float
 
+    W_q_unpacked = W_q.clone()
+
     W_q = pack[meta["packing"]](W_q)
 
     # cleanup
     del W, _min, _max
     torch.cuda.empty_cache()
 
-    return W_q, meta
+    return W_q, meta, W_q_unpacked
 
 def quantize(
     W: Tensor,
@@ -346,7 +348,7 @@ def quantize(
     quant_zero = zero_quant_params is not None
 
     # Quantize
-    W_q, meta = quantize_algo(
+    W_q, meta, W_q_unpacked = quantize_algo(
         W,
         device="cpu",
         compute_dtype=torch.float16,
@@ -354,7 +356,7 @@ def quantize(
     )
     meta.update({"quant_scale": quant_scale, "quant_zero": quant_zero})
 
-    return W_q, meta
+    return W_q, meta, W_q_unpacked
 
 
 def dequantize(W_q: Tensor, meta: dict) -> Tensor:

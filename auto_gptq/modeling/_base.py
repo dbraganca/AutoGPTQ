@@ -320,6 +320,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = max_threads
                         perchannel=True,
                         sym=self.quantize_config.sym,
                         mse=False,
+                        L = self.quantize_config.L,
                     )
 
                 def add_batch(name):

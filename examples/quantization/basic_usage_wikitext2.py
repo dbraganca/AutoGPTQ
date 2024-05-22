@@ -140,7 +140,9 @@ def main():
     quantize_config = BaseQuantizeConfig(
         bits=2,  # quantize model to 4-bit
         group_size=-1,  # it is recommended to set the value to 128
-        desc_act=False,  # desc_act and group size only works on triton
+        desc_act = False,  # desc_act and group size only works on triton
+        sym = False,
+        L = 0
     )
 
     # load un-quantized model, the model will always be force loaded into cpu
@@ -149,9 +151,6 @@ def main():
     # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
     # with value under torch.LongTensor type.
     model.quantize(traindataset, use_triton=False)
-
-    # save quantized model
-    model.save_quantized(quantized_model_dir)
 
     # save quantized model using safetensors
     model.save_quantized(quantized_model_dir, use_safetensors=True)

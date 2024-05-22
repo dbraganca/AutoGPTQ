@@ -85,13 +85,16 @@ class GPTQ:
         hqq_group_size = group_size if group_size != -1 else None
 
         hqq_quant_config = {
-            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': hqq_group_size, 'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
+            'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': hqq_group_size, 
+                                    'optimize': True, 'round_zero': True, 'axis': 1, 'view_as_float': False},
             'scale_quant_params': None,
             'zero_quant_params': None}
         
-        Q_hqq, meta_hqq = hqq_quantize(W, **hqq_quant_config)
+        _ , meta_hqq, Q_hqq = hqq_quantize(W, **hqq_quant_config)
 
-        W_hqq = hqq_dequantize(Q_hqq, meta_hqq)
+        W_hqq = hqq_dequantize(_, meta_hqq)
+
+        del _
 
         H = self.H
         del self.H
@@ -183,8 +186,8 @@ class GPTQ:
                 logger.debug(torch.sum(Losses))
 
         torch.cuda.synchronize()
-        logger.info(f"duration: {(time.time() - tick)}")
-        logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
+        #logger.info(f"duration: {(time.time() - tick)}")
+        #logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
 
         group_size = group_size if group_size != -1 else self.columns
         if static_groups and actorder:
@@ -200,23 +203,28 @@ class GPTQ:
             Q = Q.t()
 
         logger.debug(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
-        logger.debug(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")  
+        logger.debug(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")    
 
-        #reshape hqq scale and zero to match the shape of the quantizer
-        #meta_hqq["scale"] = meta_hqq["scale"].reshape(self.quantizer.scale.shape)
-        #meta_hqq["zero"] = meta_hqq["zero"].reshape(self.quantizer.zero.shape)       
+        #logger.info(f"Prev self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
+        #logger.info(f"Prev self.quantizer.zero: {self.quantizer.zero[:5]} ")
+        Q_gptq = (Q /  self.quantizer.scale) + self.quantizer.zero
+        logger.info(f"GPTQ Q:\n {Q_gptq[:5]} ")
+        del Q_gptq
 
-        logger.info(f"Prev self.quantizer.scale: {self.quantizer.scale[:5]} ")
-        logger.info(f"Prev self.quantizer.zero: {self.quantizer.zero[:5]} ")
-        logger.info(f"Prev Q: {finalQ[0][:5]} ")
+        logger.info(f"Hqq Q:\n {Q_hqq[:5]}")
+        del Q_hqq
 
         self.quantizer.scale = L*meta_hqq["scale"] + (1-L)*self.quantizer.scale
         self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
+        
+        # get final Q with 10% of Hqq and 90% of GPTQ
+        # convert the Q to W_q using (Q-zero) * scale
+
         finalQ = L*W_hqq + (1-L)*Q
 
-        logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5]} ")
-        logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
-        logger.info(f"Final Q: {finalQ[0][:5]} ")
+        #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
+        #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
+        logger.info(f"Final Q:\n {finalQ[0][:5]} ")
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
