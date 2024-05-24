@@ -320,7 +320,6 @@ os.environ['NUMEXPR_MAX_THREADS'] = max_threads
                         perchannel=True,
                         sym=self.quantize_config.sym,
                         mse=False,
-                        L = self.quantize_config.L,
                     )
 
                 def add_batch(name):
@@ -358,6 +357,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = max_threads
                         group_size=self.quantize_config.group_size,
                         actorder=self.quantize_config.desc_act,
                         static_groups=self.quantize_config.static_groups,
+                        L = self.quantize_config.L,
                     )
                     quantizers[f"{self.layers_block_name}.{i}.{name}"] = (
                         gptq[name].quantizer.to(CPU if force_layer_back_to_cpu else cur_layer_device),

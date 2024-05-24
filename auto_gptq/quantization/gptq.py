@@ -86,14 +86,12 @@ class GPTQ:
 
         hqq_quant_config = {
             'weight_quant_params': {'nbits': self.quantizer.bits, 'channel_wise': self.quantizer.perchannel, 'group_size': hqq_group_size, 
-                                    'optimize': True, 'round_zero': True, 'axis': 1, 'view_as_float': False},
+                                    'optimize': True, 'round_zero': False, 'axis': 1, 'view_as_float': False},
             'scale_quant_params': None,
             'zero_quant_params': None}
         
         _ , meta_hqq, Q_hqq = hqq_quantize(W, **hqq_quant_config)
-
-        W_hqq = hqq_dequantize(_, meta_hqq)
-
+        W_hqq = hqq_dequantize(_, meta_hqq)        
         del _
 
         H = self.H
@@ -171,6 +169,7 @@ class GPTQ:
                 Losses1[:, i] = (w - q) ** 2 / d**2
 
                 err1 = ((w - w_hqq) * L + (w - q) * (1 - L)) / d
+
                 W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 Err1[:, i] = err1
 
@@ -186,6 +185,7 @@ class GPTQ:
                 logger.debug(torch.sum(Losses))
 
         torch.cuda.synchronize()
+
         #logger.info(f"duration: {(time.time() - tick)}")
         #logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
 
@@ -218,8 +218,6 @@ class GPTQ:
         self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
         
         # get final Q with 10% of Hqq and 90% of GPTQ
-        # convert the Q to W_q using (Q-zero) * scale
-
         finalQ = L*W_hqq + (1-L)*Q
 
         #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")

@@ -1,12 +1,75 @@
 import numpy as np
-import torch
 import torch.nn as nn
-
+from datasets import load_dataset
+import torch, time
+from tqdm import tqdm
+import random
+import gc
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
+from transformers import AutoTokenizer
 
 
 pretrained_model_dir = "facebook/opt-125m"
 quantized_model_dir = "opt-125m-4bit-1g"
+
+def cleanup():
+    torch.cuda.empty_cache()
+    gc.collect()
+
+def set_seed(seed):
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
+    random.seed(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+def eval_wikitext2_v2(model : torch.nn.Module, tokenizer, max_length=1024, stride=512, verbose=True):
+    set_seed(42)
+    model = model.to('cuda')
+    model.eval()
+    
+    tokenizer.pad_token = tokenizer.eos_token
+    tokenizer.padding_side = "right"
+    tokenizer.add_eos_token = False
+
+    dataset = load_dataset('wikitext', 'wikitext-2-raw-v1', split='test')
+    encodings = tokenizer('\n\n'.join(dataset['text']), return_tensors='pt')
+
+    lls, t = [], []
+    for i in tqdm(range(0, encodings['input_ids'].size(1), stride), disable=not verbose):
+        begin_loc = max(i + stride - max_length, 0)
+        end_loc = min(i + stride, encodings['input_ids'].size(1))
+        trg_len = end_loc - i
+        input_ids = encodings['input_ids'][:,begin_loc:end_loc].to('cuda')
+        target_ids = input_ids.clone()
+        target_ids[:,:-trg_len] = -100 # ignore context
+
+        t1 = time.time()
+        with torch.no_grad():
+            with torch.cuda.amp.autocast():  # Enable mixed precision
+                outputs = model(input_ids, labels=target_ids)
+                log_likelihood = outputs.loss * trg_len
+                print(f'log_likelihood: {log_likelihood.item()}')  # Print loss values
+
+        torch.cuda.synchronize()
+        t2 = time.time()
+        t.append((t2-t1))
+        lls.append(log_likelihood)
+
+        del input_ids, target_ids
+
+    total_loss = torch.stack(lls).sum()
+    ppl = np.round(float(torch.exp(total_loss / end_loc)), 4)
+    pred_time = np.round(np.mean(t), 3)
+    if verbose:
+        print('perplexity:', ppl)
+        print('time:', str(pred_time) + ' sec')
+
+    del encodings
+    torch.cuda.empty_cache()  # Ensure memory is cleaned up
+
+    return ppl, pred_time
 
 
 # os.makedirs(quantized_model_dir, exist_ok=True)
@@ -135,11 +198,11 @@ def opt_eval(model, testenc, dev, seqlen=2048):
 
 
 def main():
-    traindataset, testenc = get_wikitext2(128, 0, 2048, pretrained_model_dir)
+    traindataset, _ = get_wikitext2(128, 0, 2048, pretrained_model_dir)
 
     quantize_config = BaseQuantizeConfig(
         bits=2,  # quantize model to 4-bit
-        group_size=-1,  # it is recommended to set the value to 128
+        group_size=768,  # it is recommended to set the value to 128
         desc_act = False,  # desc_act and group size only works on triton
         sym = False,
         L = 0
@@ -147,18 +210,18 @@ def main():
 
     # load un-quantized model, the model will always be force loaded into cpu
     model = AutoGPTQForCausalLM.from_pretrained(pretrained_model_dir, quantize_config)
+    tokenizer = AutoTokenizer.from_pretrained(pretrained_model_dir)
 
     # quantize model, the examples should be list of dict whose keys can only be "input_ids" and "attention_mask"
     # with value under torch.LongTensor type.
     model.quantize(traindataset, use_triton=False)
 
-    # save quantized model using safetensors
+    # save/load quantized model using safetensors
     model.save_quantized(quantized_model_dir, use_safetensors=True)
-
-    # load quantized model, currently only support cpu or single gpu
     model = AutoGPTQForCausalLM.from_quantized(quantized_model_dir, device="cuda:0", use_triton=False)
 
-    opt_eval(model.model, testenc, "cuda:0")
+    eval_wikitext2_v2(model, tokenizer, verbose=True)
+    #opt_eval(model.model, testenc, "cuda:0")
 
 
 if __name__ == "__main__":
