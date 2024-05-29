@@ -202,10 +202,10 @@ def main():
 
     quantize_config = BaseQuantizeConfig(
         bits=2,  # quantize model to 4-bit
-        group_size=768,  # it is recommended to set the value to 128
+        group_size=128,  # it is recommended to set the value to 128
         desc_act = False,  # desc_act and group size only works on triton
         sym = False,
-        L = 0
+        L = 0.2
     )
 
     # load un-quantized model, the model will always be force loaded into cpu

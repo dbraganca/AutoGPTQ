@@ -11,6 +11,7 @@ from .quantizer import Quantizer
 
 from .hqq import quantize as hqq_quantize
 from .hqq import dequantize as hqq_dequantize
+from ..utils.stochastic_comb import stochastically_combine_tensors as stochastic_comb
 
 logger = getLogger(__name__)
 
@@ -214,11 +215,17 @@ class GPTQ:
         logger.info(f"Hqq Q:\n {Q_hqq[:5]}")
         del Q_hqq
 
-        self.quantizer.scale = L*meta_hqq["scale"] + (1-L)*self.quantizer.scale
-        self.quantizer.zero =L*meta_hqq["zero"] + (1-L)*self.quantizer.zero
+        #hqq_scales = meta_hqq["scale"].reshape_as(self.quantizer.scale.t()).t()
+        #hqq_zeros = meta_hqq["zero"].reshape_as(self.quantizer.zero.t()).t()
+
+        #print("GPTQ zero", self.quantizer.zero.t())
+        #print("GPTQ scale", self.quantizer.scale.t())
+
+        #self.quantizer.scale = L*hqq_scales + (1-L)*self.quantizer.scale
+        #self.quantizer.zero =L*hqq_zeros + (1-L)*self.quantizer.zero
         
         # get final Q with 10% of Hqq and 90% of GPTQ
-        finalQ = L*W_hqq + (1-L)*Q
+        finalQ = stochastic_comb(Q, Q_hqq, 1-L, L)
 
         #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
         #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
