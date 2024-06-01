@@ -69,7 +69,7 @@ class GPTQ:
         group_size=-1,
         actorder=False,
         static_groups=False,
-        L = 0.1
+        L = 0.2
     ):
         W = self.layer.weight.data.clone()
         if isinstance(self.layer, nn.Conv2d):
@@ -188,7 +188,7 @@ class GPTQ:
         torch.cuda.synchronize()
 
         #logger.info(f"duration: {(time.time() - tick)}")
-        #logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
+        logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
 
         group_size = group_size if group_size != -1 else self.columns
         if static_groups and actorder:
@@ -209,10 +209,10 @@ class GPTQ:
         #logger.info(f"Prev self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
         #logger.info(f"Prev self.quantizer.zero: {self.quantizer.zero[:5]} ")
         Q_gptq = (Q /  self.quantizer.scale) + self.quantizer.zero
-        logger.info(f"GPTQ Q:\n {Q_gptq[:5]} ")
+        logger.debug(f"GPTQ Q:\n {Q_gptq[:5]} ")
         del Q_gptq
 
-        logger.info(f"Hqq Q:\n {Q_hqq[:5]}")
+        logger.debug(f"Hqq Q:\n {Q_hqq[:5]}")
         del Q_hqq
 
         #hqq_scales = meta_hqq["scale"].reshape_as(self.quantizer.scale.t()).t()
@@ -223,13 +223,17 @@ class GPTQ:
 
         #self.quantizer.scale = L*hqq_scales + (1-L)*self.quantizer.scale
         #self.quantizer.zero =L*hqq_zeros + (1-L)*self.quantizer.zero
-        
+
+        #print(f"Q:\n {Q[:5]}")
+        #print(f"W_hqq:\n {W_hqq[:5]}")
+
         # get final Q with 10% of Hqq and 90% of GPTQ
-        finalQ = stochastic_comb(Q, Q_hqq, 1-L, L)
+        #finalQ = stochastic_comb(Q, W_hqq, 1-L, L)
+        finalQ = L*W_hqq + (1-L)*Q
 
         #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
         #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
-        logger.info(f"Final Q:\n {finalQ[0][:5]} ")
+        logger.debug(f"Final Q:\n {finalQ[:5]} ")
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
