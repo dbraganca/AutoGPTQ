@@ -18,7 +18,6 @@ logger = getLogger(__name__)
 torch.backends.cuda.matmul.allow_tf32 = False
 torch.backends.cudnn.allow_tf32 = False
 
-
 class GPTQ:
     def __init__(self, layer):
         self.layer = layer
@@ -36,7 +35,6 @@ class GPTQ:
 
     def add_batch(self, inp, out):
         if os.environ.get("DEBUG"):
-            self.inp1 = inp
             self.out1 = out
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
@@ -57,6 +55,7 @@ class GPTQ:
             inp = inp.flatten(1)
         self.H *= self.nsamples / (self.nsamples + tmp)
         self.nsamples += tmp
+        self.inp1 = inp.float() # For testing purposes
         # inp = inp.float()
         inp = math.sqrt(2 / self.nsamples) * inp.float()
         # self.H += 2 / self.nsamples * inp.matmul(inp.t())
@@ -169,12 +168,33 @@ class GPTQ:
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
 
-                err1 = ((w - w_hqq) * L + (w - q) * (1 - L)) / d
+                Q[:, i1:i2] = Q1
+                Gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t()) # Gradient shape: (rows, columns)
+                gradient = Gradient[:, i1:i2] 
 
-                W1[:, i:] -= err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                
+                # Hinv shape is (columns, columns), # Hinv1 shape is (count, count)
+                # w-q shape is (rows, 1)
+                # Hinv1[i, i:] shape is (1, columns-i)
+                # shape of gradient is (rows, count)
+                # shape gradient.matmul(Hinv) is (rows, columns)
+
+                #err1 = - - ((w-q) - Hinv1[i, i:].matmul(gradient)) / d
+
+                err1 = (w-q) / d # shape of err1 is (rows, 1)
+                first_term = err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0)) # shape: (rows, columns-i). Check
+                second_term = gradient.matmul(Hinv1)[:, i:] # shape: (rows, columns-i). Check
+                final_term = (gradient.matmul(Hinv1)[i:, i] / d).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0)) #final term shape: (rows, columns-i). Check
+
+                W1[:, i:] += -first_term - second_term + final_term
                 Err1[:, i] = err1
 
             Q[:, i1:i2] = Q1
+            #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(-2 * self.inp1.matmul(((W - Q).matmul(self.inp1)).t())))}"
+
+            gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
+            logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(gradient))}")
+
             Losses[:, i1:i2] = Losses1 / 2
 
             W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
@@ -227,9 +247,29 @@ class GPTQ:
         #print(f"Q:\n {Q[:5]}")
         #print(f"W_hqq:\n {W_hqq[:5]}")
 
+        """iters = 10
+        learning_rate = 0.0001
+        threshold = 20
+        gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
+        avg_gradient = torch.mean(torch.abs(gradient))
+        
+
+        for i in range(iters):
+            print(f"Squared error: {torch.sum((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}, average error: {torch.mean((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}")
+            if avg_gradient > threshold:
+                print("avg grad", torch.mean(torch.abs(gradient)))
+                # Gradient descend on Q
+                gradient = 2 *((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
+                print(f"Q head: {Q[0][:5]}")
+                Q = Q - learning_rate * gradient
+                #print squared error between WX and QX
+                
+            else:
+                break"""
+            
         # get final Q with 10% of Hqq and 90% of GPTQ
         #finalQ = stochastic_comb(Q, W_hqq, 1-L, L)
-        finalQ = L*W_hqq + (1-L)*Q
+        finalQ = Q
 
         #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
         #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")

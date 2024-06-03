@@ -325,7 +325,7 @@ os.environ['NUMEXPR_MAX_THREADS'] = max_threads
                 def add_batch(name):
                     def tmp(_, inp, out):
                         # gptq is mutable.
-                        gptq[name].add_batch(inp[0].data, out.data)  # noqa: F821
+                        gptq[name].add_batch(inp[0].data, out.data)
 
                     return tmp
 
