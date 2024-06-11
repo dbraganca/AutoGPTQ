@@ -56,6 +56,9 @@ class GPTQ:
         self.H *= self.nsamples / (self.nsamples + tmp)
         self.nsamples += tmp
         self.inp1 = inp.float() # For testing purposes
+        if not hasattr(self, 'avg_input'):
+          self.avg_input = torch.zeros_like(inp)
+        self.avg_input += inp.float()/self.nsamples
         # inp = inp.float()
         inp = math.sqrt(2 / self.nsamples) * inp.float()
         # self.H += 2 / self.nsamples * inp.matmul(inp.t())
@@ -123,7 +126,7 @@ class GPTQ:
             invperm = torch.argsort(perm)
 
         Losses = torch.zeros_like(W)
-        Q = torch.zeros_like(W)
+        Q = W.clone()
 
         damp = percdamp * torch.mean(torch.diag(H))
         diag = torch.arange(self.columns, device=self.dev)
@@ -131,18 +134,22 @@ class GPTQ:
         H = torch.linalg.cholesky(H)
         H = torch.cholesky_inverse(H)
         H = torch.linalg.cholesky(H, upper=True)
+        H = H * torch.diag(H).unsqueeze(1) # rescale each row in H by the corresponding diagonal element in H
         Hinv = H
+        X = self.avg_input.float() * 0.001
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
             count = i2 - i1
 
             W1 = W[:, i1:i2].clone()
-            Q1 = torch.zeros_like(W1)
+            Q1 = W1.clone()
             W1_hqq = W_hqq[:, i1:i2].clone()
             Err1 = torch.zeros_like(W1)
+            Hinv_grad_d1 = torch.zeros_like(W1)
             Losses1 = torch.zeros_like(W1)
             Hinv1 = Hinv[i1:i2, i1:i2]
+            X1 = X[i1:i2, :].clone().float()
 
             for i in range(count):
                 w = W1[:, i]
@@ -167,37 +174,34 @@ class GPTQ:
                 q = self.quantizer.quantize(w.unsqueeze(1)).flatten()
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
+                err1 = (w-q) / d
 
-                Q[:, i1:i2] = Q1
-                Gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t()) # Gradient shape: (rows, columns)
-                gradient = Gradient[:, i1:i2] 
-
+                grad1 = 2 * ((W1 - Q1).matmul(X1)).matmul(X1.t())
+                Hinv1_Grad = Hinv1.matmul(grad1.t()).t()
+                hinv_grad_d1 = Hinv1_Grad[:, i] / d
+                logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
                 
-                # Hinv shape is (columns, columns), # Hinv1 shape is (count, count)
-                # w-q shape is (rows, 1)
-                # Hinv1[i, i:] shape is (1, columns-i)
-                # shape of gradient is (rows, count)
-                # shape gradient.matmul(Hinv) is (rows, columns)
+                original_term = err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
+                term1=Hinv1.matmul(grad1.t()).t()[:, i:]
+                term2=(hinv_grad_d1).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
 
-                #err1 = - - ((w-q) - Hinv1[i, i:].matmul(gradient)) / d
-
-                err1 = (w-q) / d # shape of err1 is (rows, 1)
-                first_term = err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0)) # shape: (rows, columns-i). Check
-                second_term = gradient.matmul(Hinv1)[:, i:] # shape: (rows, columns-i). Check
-                final_term = (gradient.matmul(Hinv1)[i:, i] / d).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0)) #final term shape: (rows, columns-i). Check
-
-                W1[:, i:] += -first_term - second_term + final_term
+                W1[:, i:] += -original_term - term1 + term2
                 Err1[:, i] = err1
+                Hinv_grad_d1[:, i] = hinv_grad_d1
 
             Q[:, i1:i2] = Q1
-            #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(-2 * self.inp1.matmul(((W - Q).matmul(self.inp1)).t())))}"
-
-            gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
-            logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(gradient))}")
-
+            
             Losses[:, i1:i2] = Losses1 / 2
 
-            W[:, i2:] -= Err1.matmul(Hinv[i1:i2, i2:])
+            #print(f"X is {X[0, :5]}")
+            #print(f"(W - Q)[0, :5] is {W - Q}")
+            Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())
+            logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")
+            Hinv_Grad = Hinv.matmul(Grad.t()).t()
+            term1=Hinv.matmul(Grad.t()).t()[:, i2:]
+            term2=(Hinv_grad_d1).matmul(Hinv[i1:i2, i2:])
+
+            W[:, i2:] += -Err1.matmul(Hinv[i1:i2, i2:]) - term1 + term2
 
             if os.environ.get("DEBUG"):
                 self.layer.weight.data[:, :i2] = Q[:, :i2]
@@ -247,12 +251,12 @@ class GPTQ:
         #print(f"Q:\n {Q[:5]}")
         #print(f"W_hqq:\n {W_hqq[:5]}")
 
-        """iters = 10
+        """ Gradient Descent
+        iters = 10
         learning_rate = 0.0001
         threshold = 20
         gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
         avg_gradient = torch.mean(torch.abs(gradient))
-        
 
         for i in range(iters):
             print(f"Squared error: {torch.sum((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}, average error: {torch.mean((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}")
@@ -272,7 +276,7 @@ class GPTQ:
         finalQ = Q
 
         #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
-        #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]} ")
+        #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]}")
         logger.debug(f"Final Q:\n {finalQ[:5]} ")
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
@@ -299,3 +303,4 @@ class GPTQ:
 
 
 __all__ = ["GPTQ"]
+
