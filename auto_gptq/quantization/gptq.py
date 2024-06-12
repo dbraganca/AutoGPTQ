@@ -165,7 +165,7 @@ class GPTQ:
                 term1=Hinv1.matmul(grad1.t()).t()[:, i:]
                 term2=(hinv_grad_d1).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
 
-                W1[:, i:] += -original_term (term1 - term2) * 0.001^2
+                W1[:, i:] += -original_term - (term1 - term2) * 0.001^2
                 Err1[:, i] = err1
                 Hinv_grad_d1[:, i] = hinv_grad_d1
 
