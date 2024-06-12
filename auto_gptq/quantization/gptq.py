@@ -23,10 +23,6 @@ class GPTQ:
         self.layer = layer
         self.dev = self.layer.weight.device
         W = layer.weight.data.clone()
-        if isinstance(self.layer, nn.Conv2d):
-            W = W.flatten(1)
-        if isinstance(self.layer, transformers.pytorch_utils.Conv1D):
-            W = W.t()
         self.rows = W.shape[0]
         self.columns = W.shape[1]
         self.H = torch.zeros((self.columns, self.columns), device=self.dev)
@@ -34,34 +30,22 @@ class GPTQ:
         self.quantizer = Quantizer()
 
     def add_batch(self, inp, out):
-        if os.environ.get("DEBUG"):
-            self.out1 = out
+        self.out1 = out
+        self.inp1 = inp
         if len(inp.shape) == 2:
             inp = inp.unsqueeze(0)
         tmp = inp.shape[0]
-        if isinstance(self.layer, nn.Linear) or isinstance(self.layer, transformers.Conv1D):
+        if isinstance(self.layer, nn.Linear):
             if len(inp.shape) == 3:
                 inp = inp.reshape((-1, inp.shape[-1]))
             inp = inp.t()
-        if isinstance(self.layer, nn.Conv2d):
-            unfold = nn.Unfold(
-                self.layer.kernel_size,
-                dilation=self.layer.dilation,
-                padding=self.layer.padding,
-                stride=self.layer.stride,
-            )
-            inp = unfold(inp)
-            inp = inp.permute([1, 0, 2])
-            inp = inp.flatten(1)
+
         self.H *= self.nsamples / (self.nsamples + tmp)
         self.nsamples += tmp
-        self.inp1 = inp.float() # For testing purposes
         if not hasattr(self, 'avg_input'):
           self.avg_input = torch.zeros_like(inp)
         self.avg_input += inp.float()/self.nsamples
-        # inp = inp.float()
         inp = math.sqrt(2 / self.nsamples) * inp.float()
-        # self.H += 2 / self.nsamples * inp.matmul(inp.t())
         self.H += inp.matmul(inp.t())
 
     def fasterquant(
@@ -74,10 +58,6 @@ class GPTQ:
         L = 0.2
     ):
         W = self.layer.weight.data.clone()
-        if isinstance(self.layer, nn.Conv2d):
-            W = W.flatten(1)
-        if isinstance(self.layer, transformers.Conv1D):
-            W = W.t()
         W = W.float()
 
         tick = time.time()
@@ -191,8 +171,7 @@ class GPTQ:
 
             Q[:, i1:i2] = Q1            
             Losses[:, i1:i2] = Losses1 / 2
-            Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())            
-            #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")
+            Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())
             Hinv_Grad = Hinv.matmul(Grad.t()).t()
             term1=Hinv.matmul(Grad.t()).t()[:, i2:]
             term2=(Hinv_grad_d1).matmul(Hinv[i1:i2, i2:])
@@ -202,12 +181,8 @@ class GPTQ:
             if os.environ.get("DEBUG"):
                 self.layer.weight.data[:, :i2] = Q[:, :i2]
                 self.layer.weight.data[:, i2:] = W[:, i2:]
-            #logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
 
         torch.cuda.synchronize()
-
-        #logger.info(f"duration: {(time.time() - tick)}")
-        logger.info(f"avg loss: {torch.sum(Losses).item() / self.nsamples}")
 
         group_size = group_size if group_size != -1 else self.columns
         if static_groups and actorder:
@@ -219,20 +194,13 @@ class GPTQ:
             Q = Q[:, invperm]
             g_idx = g_idx[invperm]
 
-        if isinstance(self.layer, transformers.Conv1D):
-            Q = Q.t()
-
-        Q_gptq = (Q /  self.quantizer.scale) + self.quantizer.zero
-        del Q_gptq
-
-        del Q_hqq
-
         finalQ = Q
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
-        if os.environ.get("DEBUG"):
-            logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
+        logger.info(f"Layer L2 Loss: {torch.sum((self.layer(self.inp1) - self.out1) ** 2)}")
+        logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")
+        logger.info(f"duration: {(time.time() - tick)}")
 
         if scale == []:
             scale.append(self.quantizer.scale)
