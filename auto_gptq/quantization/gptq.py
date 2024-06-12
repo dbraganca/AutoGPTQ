@@ -136,7 +136,7 @@ class GPTQ:
         H = torch.linalg.cholesky(H, upper=True)
         H = H * torch.diag(H).unsqueeze(1) # rescale each row in H by the corresponding diagonal element in H
         Hinv = H
-        X = self.avg_input.float() * 0.001
+        X = self.avg_input.float()
 
         for i1 in range(0, self.columns, blocksize):
             i2 = min(i1 + blocksize, self.columns)
@@ -179,35 +179,30 @@ class GPTQ:
                 grad1 = 2 * ((W1 - Q1).matmul(X1)).matmul(X1.t())
                 Hinv1_Grad = Hinv1.matmul(grad1.t()).t()
                 hinv_grad_d1 = Hinv1_Grad[:, i] / d
-                logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
+                #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
                 
                 original_term = err1.unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
                 term1=Hinv1.matmul(grad1.t()).t()[:, i:]
                 term2=(hinv_grad_d1).unsqueeze(1).matmul(Hinv1[i, i:].unsqueeze(0))
 
-                W1[:, i:] += -original_term - term1 + term2
+                W1[:, i:] += -original_term (term1 - term2) * 0.001^2
                 Err1[:, i] = err1
                 Hinv_grad_d1[:, i] = hinv_grad_d1
 
-            Q[:, i1:i2] = Q1
-            
+            Q[:, i1:i2] = Q1            
             Losses[:, i1:i2] = Losses1 / 2
-
-            #print(f"X is {X[0, :5]}")
-            #print(f"(W - Q)[0, :5] is {W - Q}")
-            Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())
-            logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")
+            Grad = 2 * ((W - Q).matmul(X)).matmul(X.t())            
+            #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(Grad))}")
             Hinv_Grad = Hinv.matmul(Grad.t()).t()
             term1=Hinv.matmul(Grad.t()).t()[:, i2:]
             term2=(Hinv_grad_d1).matmul(Hinv[i1:i2, i2:])
 
-            W[:, i2:] += -Err1.matmul(Hinv[i1:i2, i2:]) - term1 + term2
+            W[:, i2:] += -Err1.matmul(Hinv[i1:i2, i2:]) - (term1 - term2) * 0.001^2
 
             if os.environ.get("DEBUG"):
                 self.layer.weight.data[:, :i2] = Q[:, :i2]
                 self.layer.weight.data[:, i2:] = W[:, i2:]
-                logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
-                logger.debug(torch.sum(Losses))
+            #logger.debug(torch.sum((self.layer(self.inp1) - self.out1) ** 2))
 
         torch.cuda.synchronize()
 
@@ -227,57 +222,12 @@ class GPTQ:
         if isinstance(self.layer, transformers.Conv1D):
             Q = Q.t()
 
-        logger.debug(f"hqq scale/zero shape: {meta_hqq['scale'].shape} hqq_zero.shape: {meta_hqq['zero'].shape}")
-        logger.debug(f"scale shape: {self.quantizer.scale.shape} zero shape: {self.quantizer.zero.shape}")    
-
-        #logger.info(f"Prev self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
-        #logger.info(f"Prev self.quantizer.zero: {self.quantizer.zero[:5]} ")
         Q_gptq = (Q /  self.quantizer.scale) + self.quantizer.zero
-        logger.debug(f"GPTQ Q:\n {Q_gptq[:5]} ")
         del Q_gptq
 
-        logger.debug(f"Hqq Q:\n {Q_hqq[:5]}")
         del Q_hqq
 
-        #hqq_scales = meta_hqq["scale"].reshape_as(self.quantizer.scale.t()).t()
-        #hqq_zeros = meta_hqq["zero"].reshape_as(self.quantizer.zero.t()).t()
-
-        #print("GPTQ zero", self.quantizer.zero.t())
-        #print("GPTQ scale", self.quantizer.scale.t())
-
-        #self.quantizer.scale = L*hqq_scales + (1-L)*self.quantizer.scale
-        #self.quantizer.zero =L*hqq_zeros + (1-L)*self.quantizer.zero
-
-        #print(f"Q:\n {Q[:5]}")
-        #print(f"W_hqq:\n {W_hqq[:5]}")
-
-        """ Gradient Descent
-        iters = 10
-        learning_rate = 0.0001
-        threshold = 20
-        gradient = 2 * ((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
-        avg_gradient = torch.mean(torch.abs(gradient))
-
-        for i in range(iters):
-            print(f"Squared error: {torch.sum((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}, average error: {torch.mean((W.matmul(self.inp1) - Q.matmul(self.inp1))**2)}")
-            if avg_gradient > threshold:
-                print("avg grad", torch.mean(torch.abs(gradient)))
-                # Gradient descend on Q
-                gradient = 2 *((W - Q).matmul(self.inp1)).matmul(self.inp1.t())
-                print(f"Q head: {Q[0][:5]}")
-                Q = Q - learning_rate * gradient
-                #print squared error between WX and QX
-                
-            else:
-                break"""
-            
-        # get final Q with 10% of Hqq and 90% of GPTQ
-        #finalQ = stochastic_comb(Q, W_hqq, 1-L, L)
         finalQ = Q
-
-        #logger.info(f"Final  self.quantizer.scale: {self.quantizer.scale[:5].t()} ")
-        #logger.info(f"Final  self.quantizer.zero: {self.quantizer.zero[:5]}")
-        logger.debug(f"Final Q:\n {finalQ[:5]} ")
 
         self.layer.weight.data = finalQ.reshape(self.layer.weight.shape).type_as(self.layer.weight.data)
 
@@ -303,4 +253,3 @@ class GPTQ:
 
 
 __all__ = ["GPTQ"]
-

@@ -8,10 +8,6 @@ import gc
 from auto_gptq import AutoGPTQForCausalLM, BaseQuantizeConfig
 from transformers import AutoTokenizer
 
-
-pretrained_model_dir = "facebook/opt-125m"
-quantized_model_dir = "opt-125m-4bit-1g"
-
 def cleanup():
     torch.cuda.empty_cache()
     gc.collect()
@@ -197,11 +193,14 @@ def opt_eval(model, testenc, dev, seqlen=2048):
     model.config.use_cache = use_cache
 
 
+pretrained_model_dir = "facebook/opt-125m"
+quantized_model_dir = "opt-125m-4bit-1g"
+
 def main():
     traindataset, _ = get_wikitext2(128, 0, 2048, pretrained_model_dir)
 
     quantize_config = BaseQuantizeConfig(
-        bits=2,  # quantize model to 4-bit
+        bits=4,  # quantize model to 4-bit
         group_size=128,  # it is recommended to set the value to 128
         desc_act = False,  # desc_act and group size only works on triton
         sym = False,
