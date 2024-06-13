@@ -155,8 +155,10 @@ class GPTQ:
                 Q1[:, i] = q
                 Losses1[:, i] = (w - q) ** 2 / d**2
                 err1 = (w-q) / d
-
-                grad1 = 2 * ((W1 - Q1).matmul(X1)).matmul(X1.t())
+                diff = W1 - Q1
+                if i != count - 1:
+                    diff[:, i+1:] = 0
+                grad1 = 2 * ((diff).matmul(X1)).matmul(X1.t())
                 Hinv1_Grad = Hinv1.matmul(grad1.t()).t()
                 hinv_grad_d1 = Hinv1_Grad[:, i] / d
                 #logger.info(f"avg magnitude gradient: {torch.mean(torch.abs(grad1))}")
